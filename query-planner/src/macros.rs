@@ -1,3 +1,4 @@
+#[macro_export]
 macro_rules! get_directive {
     ($directives:expr , $name:expr) => {
         $directives.iter().filter(|d| d.name == $name)
