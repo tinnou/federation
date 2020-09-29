@@ -282,6 +282,41 @@ it('errors on invalid usages of default operation names', () => {
   `);
 });
 
+it('@key missing on extension should fail validation', () => {
+  const firstService = {
+    typeDefs: gql`
+      type Query {
+        hello:String
+      }
+
+      type Product @key(fields: "sku") {
+        sku: String!
+        upc: String!
+        color: Color!
+      }
+
+      type Color {
+        id: ID!
+        value: String!
+      }
+    `,
+    name: 'firstService',
+  };
+
+  const secondService = {
+    typeDefs: gql`
+      extend type Product { # missing @key directive
+        sku: String! @external
+        price: Int! @requires(fields: "sku")
+      }
+    `,
+    name: 'secondService',
+  };
+
+  const { errors } = composeAndValidate([firstService, secondService]);
+  expect(errors).toHaveLength(1);
+});
+
 describe('composition of value types', () => {
   function getSchemaWithValueType(valueType: DocumentNode) {
     const serviceA = {
