@@ -688,6 +688,28 @@ Scenario: for abstract types, it should add __typename when fetching objects of 
     }
     """
 
+Scenario: Issue query planner expands all possible types of interfaces even when those types are not present in the service to be fetched from
+  Given query
+  """
+  query {
+    periodicals {
+      name
+    }
+  }
+  """
+  Then query plan
+  """
+  {
+    "kind": "QueryPlan",
+    "node": {
+      "kind": "Fetch",
+      "serviceName": "product",
+      "variableUsages": [],
+      "operation": "{periodicals{__typename name}}"
+    }
+  }
+  """
+
 Scenario: should break up when traversing an extension field on an interface type from a service
   Given query
     """

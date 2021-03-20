@@ -165,6 +165,25 @@ type Query {
     topProducts(first: Int = 5): [Product] @resolve(graph: "product")
     topCars(first: Int = 5): [Car] @resolve(graph: "product")
     topReviews(first: Int = 5): [Review] @resolve(graph: "reviews")
+    periodicals: Named @resolve(graph: "product")
+}
+
+interface Named {
+    name: String
+}
+
+type Magazine implements Named
+@owner(graph: "product")
+@key(fields: "{id}", graph: "product") {
+    id: String
+    name: String
+}
+
+type SuperReview implements Named
+@owner(graph: "reviews")
+@key(fields: "{id}", graph: "reviews") {
+    id: String
+    name: String
 }
 
 type Review
