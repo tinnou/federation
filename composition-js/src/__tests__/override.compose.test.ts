@@ -568,6 +568,63 @@ describe("composition involving @override directive", () => {
     ]);
   });
 
+  it("override field with change to type definition and interface", () => {
+    const subgraph1 = {
+      name: "Subgraph1",
+      url: "https://Subgraph1",
+      typeDefs: gql`
+        type Query {
+          t: T
+        }
+
+        type T implements F @key(fields: "k"){
+          k: ID
+          a: E @override(from: "Subgraph2")
+        }
+        
+        type E implements F @shareable {
+          a: T
+        }
+        
+        interface F {
+          a: F
+        }
+      `,
+    };
+
+    const subgraph2 = {
+      name: "Subgraph2",
+      url: "https://Subgraph2",
+      typeDefs: gql`
+        interface F {
+          a: F
+        }
+        
+        type T implements F @key(fields: "k") {
+          k: ID
+          a: F
+        }
+        
+        # side issue: we should not have to redefine E type below since subgraph1 overrides the T.a so E 
+        #  doesn't have to be present in subgraph2.
+        type E implements F @shareable {
+          a: T
+        }
+      `,
+    };
+
+    const result = composeAsFed2Subgraphs([subgraph1, subgraph2]);
+    expect(result.errors?.length).toBe(1);
+    expect(result.errors).toBeDefined();
+    expect(errors(result)).toStrictEqual([
+      [
+        'FIELD_TYPE_MISMATCH',
+        'Type of field "T.a" is incompatible across subgraphs: it has type "F" in subgraph "Subgraph2" but type "T" in subgraph "Subgraph1"'
+      ]
+    ]);
+  });
+
+
   it("override field that is a key in another type", () => {
     const subgraph1 = {
       name: "Subgraph1",
