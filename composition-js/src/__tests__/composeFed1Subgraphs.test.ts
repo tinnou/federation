@@ -357,6 +357,24 @@ describe('validations', () => {
     expect(subgraphCAST.subgraph).toBe("subgraphC");
     expect(subgraphCAST.kind).toBe("ObjectTypeExtension");
   });
+
+  it('repro redefined built-in scalar breaks @key directive', () => {
+    const subgraphA = {
+      typeDefs: gql`
+        type Query {
+          q: String
+        }
+        type A @key(fields: "k") {
+          k: ID!
+        }
+        scalar Boolean
+      `,
+      name: 'subgraphA',
+    };
+
+    const result = composeServices([subgraphA,]);
+    assertCompositionSuccess(result);
+  });
 });
 
 describe('shareable', () => {
