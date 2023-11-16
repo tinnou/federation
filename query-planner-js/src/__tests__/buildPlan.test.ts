@@ -13,6 +13,13 @@ import {
   composeAndCreatePlannerWithOptions,
 } from './testHelper';
 import { enforceQueryPlannerConfigDefaults } from '../config';
+import { composeServices, CompositionResult, CompositionSuccess } from '@apollo/composition';
+
+function assertCompositionSuccess(r: CompositionResult): asserts r is CompositionSuccess {
+  if (r.errors) {
+    throw new Error(`Expected composition to succeed but got errors:\n${r.errors.join('\n\n')}`);
+  }
+}
 
 describe('shareable root fields', () => {
   test('can use same root operation from multiple subgraphs in parallel', () => {
@@ -3497,6 +3504,86 @@ describe('handles non-intersecting fragment conditions', () => {
       }
     `);
   });
+
+  test('with include directive', () => {
+    const subgraphA = {
+      typeDefs: gql`
+        type Query {
+          node: Node
+        }
+        
+        interface Node {
+            _id: ID
+        }
+        
+        type Show implements Node @key(fields: "id") @extends {
+          _id: ID
+          id: ID @external
+        }
+      `,
+      name: 'subgrapha',
+    };
+
+    const subgraphB = {
+      typeDefs: gql`
+        interface Video {
+            id: ID
+            title: String
+        }
+        
+        type Show implements Video @key(fields: "id") {
+            id: ID
+            title: String
+        }
+      `,
+      name: 'gusto'
+    }
+
+    const result = composeServices([subgraphA, subgraphB]);
+    assertCompositionSuccess(result);
+
+    const supergraph = Supergraph.build(result.supergraphSdl);
+    const api = supergraph.apiSchema();
+    const queryPlanner = new QueryPlanner(supergraph);
+
+    const operation = operationFromDocument(
+        api,
+        gql`
+        query fragmentAndInclude {
+          node {
+            __typename
+            ...videoFragmentOuter
+            _id
+          }
+        }
+        
+        fragment videoFragmentOuter on Video {
+          ...videoFragmentInner @include(if: true)
+        }
+        
+        fragment videoFragmentInner on Video {
+          __isVideo: __typename
+        }
+      `,
+    );
+    const queryPlan = queryPlanner.buildQueryPlan(operation);
+    expect(queryPlan).toMatchInlineSnapshot(`
+      QueryPlan {
+        Fetch(service: "subgrapha") {
+          {
+            node {
+              __typename
+              ... on Show {
+                __isVideo: __typename
+              }
+              _id
+            }
+          }
+        },
+      }
+    `);
+  });
+
 
   test('with federation 2 subgraphs', () => {
     const subgraph1 = {
