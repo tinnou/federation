@@ -14,6 +14,162 @@ import {
 } from './testHelper';
 import { enforceQueryPlannerConfigDefaults } from '../config';
 
+
+describe('nested unions planner bug', () => {
+  test('repro', () => {
+    const subgraph1 = {
+      name: 'searchSubgraph',
+      typeDefs: gql`
+      type Query {
+        search: [SearchResult]
+      }
+      
+      union SearchResult = MovieResult | ArticleResult
+      union Section = EntityCollectionSection | GallerySection
+      
+      type MovieResult @key(fields: "id") {
+        id: ID!
+        sections: [Section]
+      }
+      
+      type ArticleResult @key(fields: "id") {
+        id: ID!
+        sections: [Section]
+      }
+      
+      type EntityCollectionSection @key(fields: "id") {
+        id: ID!
+      }
+      
+      type GallerySection @key(fields: "id") {
+        id: ID!
+      }
+      `,
+    };
+
+    const subgraph2 = {
+      name: 'artworkSubgraph',
+      typeDefs: gql`
+      type Query {
+        me: String
+      }
+      
+      type EntityCollectionSection @key(fields: "id") {
+        id: ID!
+        title: String
+        artwork(params: String): String
+      }
+      
+      type GallerySection @key(fields: "id") {
+        id: ID!
+        artwork(params: String): String
+      }
+      `,
+    };
+
+    const [api, queryPlanner] = composeAndCreatePlanner(subgraph1, subgraph2);
+    const operation = operationFromDocument(
+        api,
+        gql`
+        query Search($movieParams: String, $articleParams: String) {
+          search {
+            __typename
+            ... on MovieResult {
+              id
+              sections {
+                ... on EntityCollectionSection {
+                  id
+                  artwork(params: $movieParams)
+                }
+              }
+            }
+            ... on ArticleResult {
+              id
+              sections {
+                ... on EntityCollectionSection {
+                  id
+                  artwork(params: $articleParams)
+                  title
+                }
+              }
+            }
+          }
+        }
+      `,
+    );
+
+    const plan = queryPlanner.buildQueryPlan(operation);
+    expect(plan).toMatchInlineSnapshot(`
+      QueryPlan {
+        Sequence {
+          Fetch(service: "searchSubgraph") {
+            {
+              search {
+                __typename
+                ... on MovieResult {
+                  __typename
+                  id
+                  sections {
+                    __typename
+                    ... on EntityCollectionSection {
+                      id
+                      __typename
+                    }
+                  }
+                }
+                ... on ArticleResult {
+                  __typename
+                  id
+                  sections {
+                    __typename
+                    ... on EntityCollectionSection {
+                      id
+                      __typename
+                    }
+                  }
+                }
+              }
+            }
+          }
+          Parallel {
+            Flatten(path: "search.@|MovieResult.sections.@") {
+              Fetch(service: "artworkSubgraph") {
+                {
+                  ... on EntityCollectionSection {
+                    __typename
+                    id
+                  }
+                } =>
+                {
+                  ... on EntityCollectionSection {
+                    artwork(params: $movieParams)
+                  }
+                }
+              }
+            }
+            Flatten(path: "search.@|ArticleResult.sections.@") {
+              Fetch(service: "artworkSubgraph") {
+                {
+                  ... on EntityCollectionSection {
+                    __typename
+                    id
+                  }
+                } =>
+                {
+                  ... on EntityCollectionSection {
+                    title
+                    artwork(params: $articleParams)
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    `);
+  });
+});
+
 describe('shareable root fields', () => {
   test('can use same root operation from multiple subgraphs in parallel', () => {
     const subgraph1 = {
