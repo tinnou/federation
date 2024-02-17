@@ -101,6 +101,7 @@ import { Conditions, conditionsOfSelectionSet, isConstantCondition, mergeConditi
 import { enforceQueryPlannerConfigDefaults, QueryPlannerConfig, validateQueryPlannerConfig } from "./config";
 import { generateAllPlansAndFindBest } from "./generateAllPlans";
 import { QueryPlan, ResponsePath, SequenceNode, PlanNode, ParallelNode, FetchNode, SubscriptionNode, trimSelectionNodes } from "./QueryPlan";
+import { CollectedFieldsInSet } from "@apollo/federation-internals";
 
 const debug = newDebugLogger('plan');
 
@@ -1310,14 +1311,33 @@ class FetchGroup {
     // - only handling a single parent could be expanded on later, but we don't need it yet so we focus on the simpler case.
     const ownParents = this.parents();
     const siblingParents = sibling.parents();
+
     return this.deferRef === sibling.deferRef
       && this.subgraphName === sibling.subgraphName
       && sameMergeAt(this.mergeAt, sibling.mergeAt)
       && ownParents.length === 1
       && siblingParents.length === 1
-      && ownParents[0].group === siblingParents[0].group;
+      && ownParents[0].group === siblingParents[0].group
+      && this.hasNoOverlappingFieldsWithDifferentParams(sibling);
   }
 
+  hasNoOverlappingFieldsWithDifferentParams(sibling: FetchGroup): boolean {
+    let sel = this.selection;
+    let siblings_sel = sibling.selection;
+    debug.group(() => `Selection \n${sel}`);
+    debug.group(() => `Selection Sibling \n${siblings_sel}`);
+    // diff selections and if there is overlap of fields check that the selection is exactly the same, i.e params
+    // are exactly the same on each element
+    let fieldsInSet_this: CollectedFieldsInSet = sel.fieldsInSet();
+    let fieldsInSet_that: CollectedFieldsInSet = siblings_sel.fieldsInSet();
+    let differingElts = find_differing_elements_at_same_path(fieldsInSet_this, fieldsInSet_that,
+        (left, right) => {
+          debug.group(() => `Field left ${left.toString()} , Field right ${right.toString()}`);
+          return left.element.equals(right.element);
+        });
+
+    return differingElts.length == 0;
+  }
   /**
    * Merges the provided sibling (shares a common parent) of `this` group into it.
    *
@@ -2518,7 +2538,14 @@ class FetchDependencyGraph {
         let i = 0;
         while (i < groups.length) {
           const current = groups[i];
-          if (group.deferRef === current.deferRef && group.inputs!.equals(current.inputs!)) {
+
+          function canMerge(): boolean {
+              return group.deferRef === current.deferRef
+                  && group.inputs!.equals(current.inputs!)
+                  && group.hasNoOverlappingFieldsWithDifferentParams(current)
+          }
+
+          if (canMerge()) {
             bucket.push(current);
             groups.splice(i, 1);
             // Note that we don't change `i` since we just removed the element at that index and so the new
@@ -4680,4 +4707,34 @@ function operationForQueryFetch(
   // Note that this is called _before_ named fragments reuse is attempted, so there is not spread in
   // the selection, hence the `undefined` for fragments.
   return new Operation(subgraphSchema, rootKind, selectionSet, allVariableDefinitions.filter(selectionSet.usedVariables()), undefined, operationName);
+}
+
+function find_differing_elements_at_same_path(left: CollectedFieldsInSet, right: CollectedFieldsInSet, valueComparisonFct: (valueLeft: FieldSelection, valueRight: FieldSelection) => boolean): CollectedFieldsInSet {
+  const differingElements: CollectedFieldsInSet = [];
+  const rightMap = new Map();
+
+  for (let rightItem of right) {
+    const key = JSON.stringify(rightItem.path) + "." + rightItem.field.key();
+    if (rightMap.has(key)) {
+      rightMap.get(key).push(rightItem.field);
+    } else {
+      rightMap.set(key, [rightItem.field]);
+    }
+  }
+
+  for (let leftItem of left) {
+    const key = JSON.stringify(leftItem.path) + "." + leftItem.field.key();
+    if (rightMap.has(key) && rightMap.get(key).some((field: FieldSelection) => !valueComparisonFct(field, leftItem.field))) {
+      differingElements.push(leftItem);
+    }
+  }
+
+  for (let rightItem of right) {
+    const key = JSON.stringify(rightItem.path)+ "." + rightItem.field.key();
+    if (left.some(leftItem => JSON.stringify(leftItem.path) + "." + leftItem.field.key() === key && !valueComparisonFct(leftItem.field, rightItem.field))) {
+      differingElements.push(rightItem);
+    }
+  }
+
+  return differingElements;
 }

@@ -16,10 +16,9 @@ import { enforceQueryPlannerConfigDefaults } from '../config';
 
 
 describe('nested unions planner bug', () => {
-  test('repro', () => {
-    const subgraph1 = {
-      name: 'searchSubgraph',
-      typeDefs: gql`
+  const subgraph1 = {
+    name: 'searchSubgraph',
+    typeDefs: gql`
       type Query {
         search: [SearchResult]
       }
@@ -45,11 +44,11 @@ describe('nested unions planner bug', () => {
         id: ID!
       }
       `,
-    };
+  };
 
-    const subgraph2 = {
-      name: 'artworkSubgraph',
-      typeDefs: gql`
+  const subgraph2 = {
+    name: 'artworkSubgraph',
+    typeDefs: gql`
       type Query {
         me: String
       }
@@ -65,9 +64,11 @@ describe('nested unions planner bug', () => {
         artwork(params: String): String
       }
       `,
-    };
+  };
 
-    const [api, queryPlanner] = composeAndCreatePlanner(subgraph1, subgraph2);
+  const [api, queryPlanner] = composeAndCreatePlanner(subgraph1, subgraph2);
+
+  test('should not merge, different params', () => {
     const operation = operationFromDocument(
         api,
         gql`
@@ -107,32 +108,30 @@ describe('nested unions planner bug', () => {
               search {
                 __typename
                 ... on MovieResult {
-                  __typename
                   id
                   sections {
                     __typename
                     ... on EntityCollectionSection {
-                      id
                       __typename
+                      id
                     }
                   }
                 }
                 ... on ArticleResult {
-                  __typename
                   id
                   sections {
                     __typename
                     ... on EntityCollectionSection {
-                      id
                       __typename
+                      id
                     }
                   }
                 }
               }
             }
-          }
+          },
           Parallel {
-            Flatten(path: "search.@|MovieResult.sections.@") {
+            Flatten(path: "search.@.sections.@") {
               Fetch(service: "artworkSubgraph") {
                 {
                   ... on EntityCollectionSection {
@@ -145,9 +144,9 @@ describe('nested unions planner bug', () => {
                     artwork(params: $movieParams)
                   }
                 }
-              }
-            }
-            Flatten(path: "search.@|ArticleResult.sections.@") {
+              },
+            },
+            Flatten(path: "search.@.sections.@") {
               Fetch(service: "artworkSubgraph") {
                 {
                   ... on EntityCollectionSection {
@@ -157,17 +156,186 @@ describe('nested unions planner bug', () => {
                 } =>
                 {
                   ... on EntityCollectionSection {
-                    title
                     artwork(params: $articleParams)
+                    title
                   }
+                }
+              },
+            },
+          },
+        },
+      }
+    `);
+  });
+
+  test('can merge same params same fields', () => {
+    // technically fetches should not be merged because `EntityCollectionSection.title` was not requested for `MovieResult`
+    const operation = operationFromDocument(
+        api,
+        gql`
+        query Search($movieParams: String) {
+          search {
+            __typename
+            ... on MovieResult {
+              id
+              sections {
+                ... on EntityCollectionSection {
+                  id
+                  artwork(params: $movieParams)
+                }
+              }
+            }
+            ... on ArticleResult {
+              id
+              sections {
+                ... on EntityCollectionSection {
+                  id
+                  artwork(params: $movieParams)
                 }
               }
             }
           }
         }
+      `,
+    );
+
+    const plan = queryPlanner.buildQueryPlan(operation);
+    expect(plan).toMatchInlineSnapshot(`
+      QueryPlan {
+        Sequence {
+          Fetch(service: "searchSubgraph") {
+            {
+              search {
+                __typename
+                ... on MovieResult {
+                  id
+                  sections {
+                    __typename
+                    ... on EntityCollectionSection {
+                      __typename
+                      id
+                    }
+                  }
+                }
+                ... on ArticleResult {
+                  id
+                  sections {
+                    __typename
+                    ... on EntityCollectionSection {
+                      __typename
+                      id
+                    }
+                  }
+                }
+              }
+            }
+          },
+          Flatten(path: "search.@.sections.@") {
+            Fetch(service: "artworkSubgraph") {
+              {
+                ... on EntityCollectionSection {
+                  __typename
+                  id
+                }
+              } =>
+              {
+                ... on EntityCollectionSection {
+                  artwork(params: $movieParams)
+                }
+              }
+            },
+          },
+        },
       }
     `);
   });
+
+  test('can merge same params', () => {
+    // technically fetches should not be merged because `EntityCollectionSection.title` was not requested for `MovieResult`
+    // but this is an optimization we can tackle later
+    const operation = operationFromDocument(
+        api,
+        gql`
+        query Search($movieParams: String) {
+          search {
+            __typename
+            ... on MovieResult {
+              id
+              sections {
+                ... on EntityCollectionSection {
+                  id
+                  artwork(params: $movieParams)
+                }
+              }
+            }
+            ... on ArticleResult {
+              id
+              sections {
+                ... on EntityCollectionSection {
+                  id
+                  artwork(params: $movieParams)
+                  title
+                }
+              }
+            }
+          }
+        }
+      `,
+    );
+
+    const plan = queryPlanner.buildQueryPlan(operation);
+    expect(plan).toMatchInlineSnapshot(`
+      QueryPlan {
+        Sequence {
+          Fetch(service: "searchSubgraph") {
+            {
+              search {
+                __typename
+                ... on MovieResult {
+                  id
+                  sections {
+                    __typename
+                    ... on EntityCollectionSection {
+                      __typename
+                      id
+                    }
+                  }
+                }
+                ... on ArticleResult {
+                  id
+                  sections {
+                    __typename
+                    ... on EntityCollectionSection {
+                      __typename
+                      id
+                    }
+                  }
+                }
+              }
+            }
+          },
+          Flatten(path: "search.@.sections.@") {
+            Fetch(service: "artworkSubgraph") {
+              {
+                ... on EntityCollectionSection {
+                  __typename
+                  id
+                }
+              } =>
+              {
+                ... on EntityCollectionSection {
+                  artwork(params: $movieParams)
+                  title
+                }
+              }
+            },
+          },
+        },
+      }
+    `);
+  });
+
+
 });
 
 describe('shareable root fields', () => {
