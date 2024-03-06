@@ -1,18 +1,174 @@
 import { QueryPlanner } from '@apollo/query-planner';
 import {
   assert,
+  buildSubgraph,
   operationFromDocument,
   ServiceDefinition,
   Supergraph,
 } from '@apollo/federation-internals';
 import gql from 'graphql-tag';
-import { FetchNode, FlattenNode, SequenceNode } from '../QueryPlan';
-import { FieldNode, OperationDefinitionNode, parse } from 'graphql';
+import {FetchNode, FlattenNode, PlanNode, SequenceNode, SubscriptionNode} from '../QueryPlan';
+import { FieldNode, GraphQLError, OperationDefinitionNode, parse, validate } from 'graphql';
 import {
   composeAndCreatePlanner,
-  composeAndCreatePlannerWithOptions,
+  composeAndCreatePlannerWithOptions, findFetchNodes,
 } from './testHelper';
 import { enforceQueryPlannerConfigDefaults } from '../config';
+
+describe('nested unions planner bug fragment edition', () => {
+  const subgraph1 = {
+    name: 'discoveryDgs',
+    typeDefs: gql`
+      type Query {
+        pinotPreQuerySearchPage: PinotUIEntity
+      }
+    
+      union PinotUIEntity = PinotBoxShotEntityTreatment | PinotEpisodicBillboardEntityTreatment | PinotBannerWithTrailerEntityTreatment
+      
+      type PinotBannerWithTrailerEntityTreatment @key(fields: "unifiedEntityId") {
+        unifiedEntityId: ID!
+        unifiedEntity: UnifiedEntity
+      }
+      
+      type PinotBoxShotEntityTreatment @key(fields: "unifiedEntityId") {
+        unifiedEntityId: ID!
+        unifiedEntity: UnifiedEntity
+      }
+      
+      type PinotEpisodicBillboardEntityTreatment @key(fields: "unifiedEntityId") {
+        unifiedEntityId: ID!
+        unifiedEntity: UnifiedEntity
+      }
+      
+      interface UnifiedEntity {
+          id: ID!
+      }
+
+      type GenericContainer implements UnifiedEntity @key(fields: "id"){
+        id: ID!
+      }
+      
+      type Supplemental implements UnifiedEntity @key(fields: "id") {
+        id: ID!
+      }
+      
+      type Show implements UnifiedEntity @key(fields: "id") {
+        id: ID!
+      }
+      `,
+  };
+
+  const subgraph2 = {
+    name: 'gusto',
+    typeDefs: gql`
+      type Query {
+        me: String
+      }
+      
+      interface Video {
+        videoId: Int!
+        taglineMessage(uiContext: String): String
+        bar: String
+      }
+      
+      interface UnifiedEntity {
+          id: ID!
+      }
+      
+      type GenericContainer implements UnifiedEntity @key(fields: "id") {
+        id: ID!
+        taglineMessage(uiContext: String): String
+      }
+      
+      type Supplemental implements UnifiedEntity & Video @key(fields: "id") {
+        videoId: Int!
+        id: ID!
+        taglineMessage(uiContext: String): String
+        bar: String
+      }
+      
+      type Show implements UnifiedEntity & Video @key(fields: "id") {
+        videoId: Int!
+        id: ID!
+        taglineMessage(uiContext: String): String
+        bar: String
+      }
+      `,
+  };
+
+  const [api, queryPlanner] = composeAndCreatePlannerWithOptions([subgraph1, subgraph2],
+      {reuseQueryFragments: true}, // if false then the test will pass
+      false);
+
+  test('should yield query plan with valid fetch selection sets', () => {
+    let query = gql`
+        query Search {
+          pinotPreQuerySearchPage {
+            __typename
+            ... on PinotBannerWithTrailerEntityTreatment {
+              __typename
+              unifiedEntity {
+                __typename
+                ... on GenericContainer {
+                  id
+                  taglineMessage(uiContext: "ODP")
+                }
+              }
+            }
+            ... on PinotEpisodicBillboardEntityTreatment {
+              __typename
+              unifiedEntity {
+                __typename
+                ...BillboardDataVideoSummary
+              }
+            }
+          }
+        }
+        
+        fragment BillboardDataVideoSummary on Video {
+          __typename
+          taglineMessage(uiContext: "BILLBOARD")
+        }
+      `;
+    const operation = operationFromDocument(
+        api,
+        query,
+        {validate: true }
+    );
+
+    const plan = queryPlanner.buildQueryPlan(operation);
+    let validatationErrors = validateSubFetches(plan.node, [subgraph1, subgraph2]);
+    expect(validatationErrors).toHaveLength(0);
+  });
+
+});
+
+/**
+ * For each fetch in a PlanNode validate the generated operation is actually spec valid against its subgraph schema
+ * @param plan
+ * @param subgraphs
+ */
+function validateSubFetches(plan: PlanNode | SubscriptionNode | undefined, subgraphs: ServiceDefinition[]):
+    { errors: readonly GraphQLError[], serviceName: string, fetchNode: FetchNode }[]
+{
+  if (!plan) {
+    return [];
+  }
+  let fetches = findFetchNodes(undefined, plan);
+  var results: { errors: readonly GraphQLError[], serviceName: string, fetchNode: FetchNode }[] = [];
+  for (let fetch of fetches) {
+    let subgraphName: string = fetch.serviceName;
+    let operation: string = fetch.operation!!;
+    let subgraphDef = subgraphs.find((s) => s.name === subgraphName);
+    let subgraph = buildSubgraph(subgraphName, 'http://blah', subgraphDef!!.typeDefs);
+    // use graphql-js validate instead of apollo's as it doesn't catch the issue
+    let gql_errors = validate(subgraph.schema.toGraphQLJSSchema(), parse(operation));
+    if (gql_errors.length > 0) {
+      results.push({ errors : gql_errors, serviceName: subgraphName, fetchNode: fetch });
+    }
+  }
+  return results;
+}
 
 describe('shareable root fields', () => {
   test('can use same root operation from multiple subgraphs in parallel', () => {

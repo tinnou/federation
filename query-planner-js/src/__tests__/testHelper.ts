@@ -24,14 +24,14 @@ export function composeAndCreatePlannerWithOptions(services: ServiceDefinition[]
   ];
 }
 
-export function findFetchNodes(subgraphName: string, node: PlanNode | SubscriptionNode | undefined): FetchNode[] {
+export function findFetchNodes(subgraphName: string | undefined, node: PlanNode | SubscriptionNode | undefined): FetchNode[] {
   if (!node) {
     return [];
   }
 
   switch (node.kind) {
     case 'Fetch':
-      return node.serviceName === subgraphName ? [node] : [];
+      return subgraphName === undefined ? [node] : (node.serviceName === subgraphName ? [node] : []);
     case 'Flatten':
       return findFetchNodes(subgraphName, node.node);
     case 'Defer':
